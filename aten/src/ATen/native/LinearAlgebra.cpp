@@ -518,6 +518,18 @@ Tensor& matmul_out(Tensor &result, const Tensor & tensor1, const Tensor & tensor
 // helper methods for matrix_exp
 namespace {
 
+template <typename scalar_t, int ROW, int COL>
+using array2d = std::array<std::array<scalar_t, COL>, ROW>;
+
+// we consider 6 Taylor expansions of degree
+// 1, 2, 4, 8, 12, 18
+constexpr int total_n_degs = 6;
+
+// 0! to 4!
+// Introduced to avoid 'magic number's clang-tidy complaints about
+constexpr int fact_array_size = 5;
+constexpr std::array<float, fact_array_size> fact = {1., 1., 2., 6., 24.};
+
 // Iterates over first `n_batch_dims` and applies `f` to each element.
 // TODO: this implemtation is not efficient, it simply iteratates over
 // batch elements in a serial for-loop.
@@ -584,13 +596,13 @@ Tensor compute_T1(const Tensor& A) {
 Tensor compute_T2(const Tensor& A) {
   const auto I = at::eye(A.size(-1), A.options()).expand_as(A);
   const auto A2 = at::matmul(A, A);
-  return I + A + A2 / 2.;
+  return I + A + A2 / fact[2];
 }
 
 Tensor compute_T4(const Tensor& A) {
   const auto I = at::eye(A.size(-1), A.options()).expand_as(A);
   const auto A2 = at::matmul(A, A);
-  return I + A + at::matmul(A2, I / 2. + A / 6. + A2 / 24.);
+  return I + A + at::matmul(A2, I / fact[2] + A / fact[3] + A2 / fact[4]);
 }
 
 template <typename scalar_t>
@@ -615,7 +627,8 @@ Tensor compute_T8(const Tensor& A) {
 
 template <typename scalar_t>
 Tensor compute_T12(const Tensor& A) {
-  constexpr scalar_t b[][4] = {
+  constexpr int num_prods = 4;
+  constexpr array2d<scalar_t, num_prods, num_prods> b = {{
     {
       9.0198e-16,
       0.46932117595418237389,
@@ -640,20 +653,22 @@ Tensor compute_T12(const Tensor& A) {
       -0.02027855540589259079,
       -0.00675951846863086359
     }
-  };
+  }};
 
   const auto I = at::eye(A.size(-1), A.options()).expand_as(A);
   const auto A2 = at::matmul(A, A);
   const auto A3 = at::matmul(A2, A);
-  std::reference_wrapper<const Tensor> As[] = {I, A, A2, A3};
+  std::array<
+    std::reference_wrapper<const Tensor>,
+    num_prods> As = {I, A, A2, A3};
 
-  Tensor Bs[4];
-  for (int i = 0; i < 4; ++i) {
+  std::array<Tensor, num_prods> Bs;
+  for (int i = 0; i < num_prods; ++i) {
     Bs[i] = at::zeros(A.sizes(), A.options());
   }
 
-  for (int i = 0; i < 4; ++i) {
-    for (int j = 0; j < 4; ++j) {
+  for (int i = 0; i < num_prods; ++i) {
+    for (int j = 0; j < num_prods; ++j) {
       Bs[i] += b[i][j] * As[j];
     }
   }
@@ -666,7 +681,8 @@ Tensor compute_T12(const Tensor& A) {
 
 template <typename scalar_t>
 Tensor compute_T18(const Tensor& A) {
-  constexpr scalar_t b[][5] = {
+  constexpr int num_prods = 5;
+  constexpr array2d<scalar_t, num_prods, num_prods> b = {{
     {
       0.,
       -1.00365581030144618291e-01,
@@ -702,21 +718,23 @@ Tensor compute_T18(const Tensor& A) {
       -1.69364939002081722752e-02,
       -1.40086798182036094347e-05
     }
-  };
+  }};
 
   const auto I = at::eye(A.size(-1), A.options()).expand_as(A);
   const auto A2 = at::matmul(A, A);
   const auto A3 = at::matmul(A2, A);
   const auto A6 = at::matmul(A3, A3);
-  std::reference_wrapper<const Tensor> As[] = {I, A, A2, A3, A6};
+  std::array<
+    std::reference_wrapper<const Tensor>,
+    num_prods> As = {I, A, A2, A3, A6};
 
-  Tensor Bs[5];
-  for (int i = 0; i < 5; ++i) {
+  std::array<Tensor, num_prods> Bs;
+  for (int i = 0; i < num_prods; ++i) {
     Bs[i] = at::zeros(A.sizes(), A.options());
   }
 
-  for (int i = 0; i < 5; ++i) {
-    for (int j = 0; j < 5; ++j) {
+  for (int i = 0; i < num_prods; ++i) {
+    for (int j = 0; j < num_prods; ++j) {
       Bs[i] += b[i][j] * As[j];
     }
   }
@@ -728,16 +746,19 @@ Tensor compute_T18(const Tensor& A) {
 }
 
 template <typename scalar_t>
-Tensor mexp_impl(const Tensor& a, std::array<scalar_t, 6> thetas) {
+Tensor mexp_impl(const Tensor& a, std::array<scalar_t, total_n_degs> thetas) {
   auto norm = operator_1_norm(a);
 
   auto norm_value = norm.item().template to<scalar_t>();
-  constexpr Tensor(*compute_Ts[])(const Tensor&) = {
+  constexpr std::array<
+    Tensor(*)(const Tensor&),
+    total_n_degs - 1> 
+  compute_Ts = {
     compute_T1, compute_T2, compute_T4,
     compute_T8<scalar_t>, compute_T12<scalar_t>
   };
 
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < total_n_degs - 1; ++i) {
     if (norm_value <= thetas[i]) {
       return compute_Ts[i](a);
     }
@@ -745,7 +766,7 @@ Tensor mexp_impl(const Tensor& a, std::array<scalar_t, 6> thetas) {
 
   // Scale
   auto s = at::max(at::zeros_like(norm),
-              at::ceil(at::log2(norm / thetas[5]))).to(at::kLong);
+              at::ceil(at::log2(norm / thetas[total_n_degs - 1]))).to(at::kLong);
   auto pow2s = at::pow(2, s);
   auto a_scaled = a / pow2s.unsqueeze(-1).unsqueeze(-1);
 
@@ -756,7 +777,7 @@ Tensor mexp_impl(const Tensor& a, std::array<scalar_t, 6> thetas) {
 // matrix exponential of a single matrix
 Tensor mexp(const Tensor& a) {
   if (a.scalar_type() == at::ScalarType::Float) {
-    constexpr std::array<float, 6> thetas_float = {
+    constexpr std::array<float, total_n_degs> thetas_float = {
       1.192092800768788e-07, // deg 1
       5.978858893805233e-04, // deg 2
       5.116619363445086e-02, // deg 4
@@ -767,7 +788,7 @@ Tensor mexp(const Tensor& a) {
     return mexp_impl<float>(a, thetas_float);
   }
   else { // if Double
-    constexpr std::array<double, 6> thetas_double = {
+    constexpr std::array<double, total_n_degs> thetas_double = {
       2.220446049250313e-16, // deg 1
       2.580956802971767e-08, // deg 2
       3.397168839976962e-04, // deg 4

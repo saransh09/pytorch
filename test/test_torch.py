@@ -7537,11 +7537,13 @@ class TestTorchDeviceType(TestCase):
             for i, tensor_exp in enumerate(tensors_exp_map):
                 self.assertEqual(tensors_exp_batch[i, ...], tensor_exp)
 
+        # small batch of matrices
         run_test(3, 2, 2)
         run_test(3, 3, 3)
         run_test(3, 4, 4)
         run_test(3, 5, 5)
 
+        # large batch of matrices
         run_test(3, 3, 2, 2)
         run_test(3, 3, 3, 3)
         run_test(3, 3, 4, 4)
